@@ -1,0 +1,240 @@
+#!/usr/bin/python
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+""" cas-admin - fingerprinting utility for cas
+"""
+import os
+import ConfigParser
+import optparse
+import sys
+import urlparse
+import datetime
+import calendar
+import paramiko
+
+from cas.core import CoreBase
+from cas.util import UtilBase, Logging
+from cas.rpmutils import RPMBase
+from cas.db import CasStorage, CasStorageException
+from cas.cas_subprocess import Popen, PIPE
+from cas.cas_shutil import rmtree
+
+if sys.version_info[:2] < (2,3):
+    raise SystemExit("Python >= 2.3 required")
+
+# Read in configuration
+config = ConfigParser.ConfigParser()
+config.read("/etc/cas.conf")
+settings = {}
+if config.has_section("settings"):
+    for opt, val in config.items("settings"):
+        settings[opt.upper()] = val
+
+# read maintenance options
+PURGELIMIT = config.get("maintenance","purgeLimit")
+AUTOPURGE = config.getboolean("maintenance","autoPurge")
+
+# advance options
+BUFFERSIZE=None
+if config.has_option("advanced", "buffersize"):
+    BUFFERSIZE=config.get("advanced", "buffersize")
+
+class CasDatabaseHandler(object):
+    def __init__(self, logger):
+        self.casLog = logger
+        self.util = UtilBase()
+        # setup database connection
+        self.first_run = False
+        if not os.path.isfile(settings["DATABASE"]):
+            self.first_run = True
+        self.db = CasStorage(settings["DATABASE"])
+        self.db.connect()
+        if self.first_run:
+            self.db.buildTable()
+
+    def run(self):
+        # Uses emacs regex -- see `man find`
+        # TODO: rework kernel filtering to expand scope
+        #       beyond just debuginfo rpms.
+        cmd = ["find", "-L", settings["KERNELS"], "-iregex", settings["RPMFILTER"]]
+        pipe = Popen(cmd, stdout=PIPE, stderr=PIPE)
+        # setup count for kernels found, mainly for console output
+        count = 0
+        # create list of rpms from `cmd`
+        for line in pipe.stdout:
+            self.db.addDebuginfoRPM(line.strip())
+            self.casLog.status("(found) %-5d kernel(s)" % (count,))
+            count = count + 1
+        # query database for debuginfo rpms
+        rpms = self.db.getAllDebuginfoRPM()
+        for id, rpm in rpms:
+            # temporary storage path in form of DEBUGS/COUNT
+            dst = os.path.join(settings["DEBUGS"], str(count))
+            if not os.path.isdir(dst):
+                os.makedirs(dst)
+            rpmTool = RPMBase()
+            self.casLog.status("(extracting) %-50s" % (os.path.basename(rpm),))
+            results = rpmTool.extract(rpm, dst)
+            # Sort through extracted debug for each type
+            # e.g. hugemem, PAE, smp, largesmp
+            for item in results:
+                vmlinux = item.strip()
+                stamper = CoreBase()
+                debugKernel = os.path.normpath(vmlinux)
+                timestamp = stamper.timestamp(debugKernel, BUFFERSIZE)
+                # add rpm id, debug, timestamp to database
+                self.db.addTimestamp(id, debugKernel, timestamp)
+            # Cleanup extracted debugs
+            rmtree(dst)
+        self.casLog.info("Timestamp database built.") 
+        return
+
+class CasServerHandler(object):
+    def __init__(self, logger):
+        self.casLog = logger
+        self.util = UtilBase()
+        # setup database connection
+        self.first_run = False
+        if not os.path.isfile(settings["DATABASE"]):
+            self.first_run = True
+        self.db = CasStorage(settings["DATABASE"])
+        self.db.connect()
+        if self.first_run:
+            self.db.buildTable()
+
+    def run(self):
+        host = None
+        port = 22
+        hostname_count = 0
+        ssh_obj = paramiko.SSHClient()
+        ssh_obj.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+        for server in ssh_obj.get_host_keys().keys():
+            server = server.strip()
+            # here we test for ports and apply accordingly
+            if ':' in server:
+                server, port = server.split(':')
+                # ssh keys place [host] when defining servers with ports
+                server = server[1:-1]
+            try:
+                ssh_obj.connect(server, port=port, username=settings["CASUSER"])
+            except paramiko.AuthenticationException, e:
+                raise SystemExit(self.casLog.debug("Failed to connect to %s: %s" % (server,e)))
+            stdin, stdout, stderr = ssh_obj.exec_command("/bin/uname -m")
+            if stderr:
+                self.casLog.debug(stderr)
+            # clean up arch string
+            for i in stdout.readlines():
+                arch = i.strip()
+            self.db.addServer(server, port, arch)
+            hostname_count = hostname_count + 1
+        self.casLog.info("Server database built with %d server(s) added." % (hostname_count,))
+        return
+        
+class PurgeHandler(object):
+    def __init__(self, purgeDays, logger):
+        self.purgeDataDays = purgeDays
+        self.casLog = logger
+        self.util = UtilBase()
+        self.todaysDate = datetime.date.today()
+        
+    def run(self):
+        # create date of timedelta
+        cutOffDate = self.todaysDate - datetime.timedelta(days=self.purgeDataDays)
+        self.casLog.debug(cutOffDate)
+        # Start of purging data
+        for root, dirs, files in os.walk(settings["WORKDIRECTORY"]):
+            for d in dirs:
+                dirpath = os.path.join(root,d)
+                # pull out date from directory structure and trim it to
+                # (year, month, day)
+                searchDate = self.util.regexSearch('(\d{4})\.(\d+)\.(\d+)', dirpath)
+                if searchDate:
+                    self.casLog.debug('found %s' % (searchDate,))
+                    (year, month, day) = searchDate.split('.')
+                    # create our datetime object so we can do some arithmetic
+                    dirDate = datetime.date(int(year), int(month), int(day))
+                    self.casLog.debug(dirDate)
+                    if dirDate < cutOffDate:
+                        self.casLog.debug('Should purge old directories, %s' % (dirpath,))
+                        rmtree(dirpath)
+
+class CasAdminApplication(object):
+    def __init__(self, args):
+        self.parse_options(args)
+        self.casLog = Logging("/var/log","cas-admin", settings["DEBUGLEVEL"])
+
+    def parse_options(self, args):
+        parser = optparse.OptionParser(usage="cas-admin [opts] args")
+        parser.add_option("-b","--build", dest="buildDB",
+                          help="Build CAS DB", action="store_true",
+                          default=False)
+        parser.add_option("-s","--server", dest="server_init",
+                          help="Build SERVER DB", action="store_true",
+                          default=False)
+        parser.add_option("-p","--purge", dest="purgeData",
+                          help="Purge files default 90 days, customize with -d",
+                          action="store_true", default=False)
+        parser.add_option("-d","--days", dest="purgeDataDays",
+                          help="Set how many days back to purge data")
+        (self.opts, args) = parser.parse_args()
+        self.buildDB = self.opts.buildDB
+        self.server_init = self.opts.server_init
+        self.purgeData = self.opts.purgeData
+        self.purgeDataDays = self.opts.purgeDataDays
+
+    def run(self):
+        """ Make sure necessary directories and configuration is setup
+        prior to running the fingerprint
+        """
+        if os.getuid() is not 0:
+            raise RuntimeError, "You must be root(0), instead you are id(%d)" % (os.getuid())
+        if not os.path.isdir(os.path.dirname(settings["DATABASE"])):
+            os.makedirs(os.path.dirname(settings["DATABASE"]))
+        if not os.path.isdir(settings["DEBUGS"]):
+            os.makedirs(settings["DEBUGS"])
+
+        # if autopurge is enabled lets clean up some stale data
+        if AUTOPURGE:
+            self.casLog.debug('Autopurge enabled, purging stale data')
+            purgeHandler = PurgeHandler(int(PURGELIMIT), self.casLog).run()
+
+        if self.purgeData:
+            ans = raw_input("You are about to purge data, is this what you " \
+                                "really want to do? [Y/y/N/n]: ")
+            if ans=='Y' or ans=='y':
+                if not self.purgeDataDays:
+                    self.purgeDataDays = PURGELIMIT
+                self.casLog.info("Beginning Purge going back %s day(s)" % (self.purgeDataDays,))
+                purgeHandler = PurgeHandler(int(self.purgeDataDays), self.casLog).run()
+                raise SystemExit(self.casLog.info("Purge finished"))
+            else:
+                raise SystemExit(self.casLog.info("Purge cancelled"))
+
+        if self.buildDB:
+            self.casLog.info("Starting CAS DB instance.")
+            dbHandler = CasDatabaseHandler(self.casLog).run()
+        elif self.server_init:
+            self.casLog.info("Building CAS Server DB instance.")
+            if not os.path.isfile(os.path.expanduser("~/.ssh/known_hosts")):
+                raise SystemExit(self.casLog.info("Unable to read ssh hosts keys, " \
+                    "please make sure ssh client is configured properly"))
+            else:
+                serverHandler = CasServerHandler(self.casLog).run()
+        else:
+            raise SystemExit(self.casLog.info("Missing options, please run with --help."))
+
+if __name__=="__main__":
+    app = CasAdminApplication(sys.argv[1:])
+    sys.exit(app.run())
+

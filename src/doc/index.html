@@ -1,0 +1,438 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Core Analysis System &mdash; cas v0.15 documentation</title>
+    <link rel="stylesheet" href="_static/default.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '',
+        VERSION:     '0.15',
+        COLLAPSE_MODINDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="cas v0.15 documentation" href="" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li><a href="">cas v0.15 documentation</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="core-analysis-system">
+<h1>Core Analysis System<a class="headerlink" href="#core-analysis-system" title="Permalink to this headline">¶</a></h1>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field"><th class="field-name">Author:</th><td class="field-body">Adam Stokes</td>
+</tr>
+<tr class="field"><th class="field-name">Release:</th><td class="field-body">0.15</td>
+</tr>
+<tr class="field"><th class="field-name">Date:</th><td class="field-body">October 15, 2009</td>
+</tr>
+</tbody>
+</table>
+<div class="section" id="introduction">
+<h2>Introduction<a class="headerlink" href="#introduction" title="Permalink to this headline">¶</a></h2>
+<img alt="_images/cas_logo.png" src="_images/cas_logo.png" />
+<div class="section" id="description">
+<h3>Description<a class="headerlink" href="#description" title="Permalink to this headline">¶</a></h3>
+<p>CAS provides a user the ability to configure an environment for core analysis
+quickly. All the hassles of matching kernel versions and machine architecture
+types to core dumps are automatically detected and processed.</p>
+</div>
+<div class="section" id="prerequisites">
+<h3>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this headline">¶</a></h3>
+<p>CAS needs at least <strong>Python 2.3</strong> to run. For systems that are not running
+Fedora 9 or later (this would include RHEL 4/5) the EPEL repo needs to be
+installed. Visit <a class="reference external" href="https://fedoraproject.org/wiki/EPEL">EPEL</a> to enable
+this repository.</p>
+<p>The amount of storage needed can be determined base on the following
+information:</p>
+<ul class="simple">
+<li>The number of kernel-debuginfo packages needed</li>
+<li>How many core dumps will be processed.</li>
+</ul>
+<p>Typically it is recommended to have at least 1TB for cores and another 500GB for
+the debuginfo packages.</p>
+<p>Since analyzing cores requires the same architecture specific systems the core
+was generated on there will need to be systems available of those same types
+in order for analyzation to work properly.</p>
+</div>
+<div class="section" id="configuration">
+<h3>Configuration<a class="headerlink" href="#configuration" title="Permalink to this headline">¶</a></h3>
+<p>CAS comes with one main configuration file which is located at <tt class="docutils literal"><span class="pre">/etc/cas.conf</span></tt>.
+The overall contents of this file is shown below, further down we will break up
+each section and describe its meaning:</p>
+<div class="highlight-python"><pre>[settings]
+casuser=root
+kernels=/mnt/kernels
+rpmFilter=.*kerne.+-debuginfo-[0-9].*\.rpm
+debugs=/cores/debugs
+debugLevel=DEBUG
+workDirectory=/cores/processed
+smtphost=mail.example.com
+database=/var/db/cas/cas.db
+[maintenance]
+purgeLimit=90
+autoPurge=Yes
+[advanced]
+# crash_32=/usr/local/i386/crash
+# buffersize=None</pre>
+</div>
+<p><tt class="docutils literal"><span class="pre">casuser</span></tt>: (<strong>Required</strong>) User to run cas, recommended to run as someone other than root.</p>
+<p><tt class="docutils literal"><span class="pre">kernels</span></tt>: (<strong>Required</strong>) Describes the location of where kernel-debuginfo packages are to be
+stored. This can range anywhere from an nfs mount, samba share, local disk or
+any other type of media the cas server can access.</p>
+<p><tt class="docutils literal"><span class="pre">rpmFilters</span></tt>: (<strong>Required</strong>) This is a emacs based regular expression which is essentially
+passed to a find command to locate the various kernel-debuginfo packages defined
+in <tt class="docutils literal"><span class="pre">kernels</span></tt> directive.</p>
+<p><tt class="docutils literal"><span class="pre">debugs</span></tt>: (<strong>Required</strong>) A temporary directory in which to store the extracted vmlinux files
+from the kernel-debuginfo packages for processing. Another solution would be to
+alter this to point an existing directory like <tt class="docutils literal"><span class="pre">/tmp</span></tt>, for instance.</p>
+<p><tt class="docutils literal"><span class="pre">debugLevel</span></tt>: As the name suggest it will set the debug level for CAS output.
+Currently the only accepted values are <tt class="docutils literal"><span class="pre">DEBUG|INFO</span></tt>.</p>
+<p><tt class="docutils literal"><span class="pre">workDirectory</span></tt>: (<strong>Required</strong>) Defines where all processed cores will be placed. This mount
+point will need to have the most storage assigned to it. Depending on how many
+cores are processed in a given timeframe this area will fill up quickly.</p>
+<p><tt class="docutils literal"><span class="pre">smtphost</span></tt>: If wanting output of CAS processing email to a certain address
+this directive needs to be set. <tt class="docutils literal"><span class="pre">Note</span></tt> that the mail server should not
+require smtp authentication.</p>
+<p><tt class="docutils literal"><span class="pre">database</span></tt>: (<strong>Required</strong>) Define where the sqlite database will reside.</p>
+<p><tt class="docutils literal"><span class="pre">purgeLimit</span></tt>: Define amount of day(s) back wish to keep physical data on
+system.</p>
+<p><tt class="docutils literal"><span class="pre">autoPurge</span></tt>: Yes/No setting if wanting cas-admin to auto purge stale data on
+each run.</p>
+<p><tt class="docutils literal"><span class="pre">crash_32</span></tt>: Primarily used on x86_64 systems to process x86 cores. If x86
+version of crash is installed this directive can be set to the crash binary
+and CAS will automatically process x86 cores on a x86_64 machine. <tt class="docutils literal"><span class="pre">Note</span></tt> this
+is only available if the CAS server is a x86_64 machine.</p>
+<p><tt class="docutils literal"><span class="pre">buffersize</span></tt>: Extend the read buffer when analyzing a core for a timestamp.
+<tt class="docutils literal"><span class="pre">Note</span></tt> this is normally needed for itanium cores, otherwise, the default is
+fine.</p>
+</div>
+</div>
+<div class="section" id="setup-execution">
+<h2>Setup &amp; Execution<a class="headerlink" href="#setup-execution" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="preparing-cas-server">
+<h3>Preparing CAS Server<a class="headerlink" href="#preparing-cas-server" title="Permalink to this headline">¶</a></h3>
+<p>To install the CAS package simply type:</p>
+<div class="highlight-python"><pre>$ yum install cas</pre>
+</div>
+<p>Once installed edit <tt class="docutils literal"><span class="pre">/etc/cas.conf</span></tt> as root using any preferred text editor.
+As described above the required directives need to be altered to suit the
+environment in question.</p>
+<p>In this example, <tt class="docutils literal"><span class="pre">/mnt/kernels</span></tt> is an nfs mount which houses the kernel-debuginfo
+packages. <tt class="docutils literal"><span class="pre">/cores</span></tt> is where all processed cores are stored and <tt class="docutils literal"><span class="pre">/tmp</span></tt> is the
+temporary storage for collecting the necessary data from the kernel-debuginfos.
+A mail server is setup within the environment to email CAS results and this
+optional directive is shown to reflect that. Finally, the CAS server is an x86_64
+machine and the environment will be processing x86 cores, therefore, the directive
+for this is uncommented and path to the x86 crash binary is given. <tt class="docutils literal"><span class="pre">Note</span></tt> there
+is information provided within the configuration file for installing the x86 crash
+to a different location.</p>
+<p>Altering the configuration to reflect the above assumptions would show the
+following:</p>
+<div class="highlight-python"><pre>[settings]
+casuser=cas
+kernels=/mnt/kernels
+rpmFilter=.*kerne.+-debuginfo-[0-9].*\.rpm
+debugs=/tmp
+debugLevel=DEBUG
+workDirectory=/cores
+smtphost=mail.cas-server.com
+database=/var/db/cas/cas.db
+[maintenance]
+purgeLimit=90
+autoPurge=Yes
+[advanced]
+crash_32=/usr/local/i386/crash
+#buffer=None</pre>
+</div>
+<p>Now that the configuration file is altered and <tt class="docutils literal"><span class="pre">/mnt/kernels</span></tt> should be populated
+with kernel-debuginfo rpm&#8217;s the next section will describe running CAS.</p>
+</div>
+<div class="section" id="running-cas">
+<h3>Running CAS<a class="headerlink" href="#running-cas" title="Permalink to this headline">¶</a></h3>
+<p>First, one or two administrative tasks need to be run. The required task is to build
+a database for all the data gathered from the kernel-debuginfo packages.:</p>
+<div class="highlight-python"><pre>$ cas-admin -b</pre>
+</div>
+<p>If several systems are deployed for CAS to use, ssh keys must be setup between the host (CAS) and
+the clients:</p>
+<div class="highlight-python"><pre>(cas-server) $ ssh-keygen -t dsa
+Cas supports passwordless entries at this time.
+(cas-server) $ ssh-copy-id -i ~/.ssh/id_dsa casuser@cas-client-system.com</pre>
+</div>
+<p>Once ssh has been setup between systems the following will build the server database:</p>
+<div class="highlight-python"><pre>$ cas-admin -s</pre>
+</div>
+<p>Please note that in order for cas to function properly it is required that only the cas
+user on the system has only those entries in its ssh hostkey file that are accessible
+with cas. Cas will error with <tt class="docutils literal"><span class="pre">Authentication</span> <span class="pre">Failed</span></tt> and exit cleanly if it runs
+into any system that it can not communicate with.</p>
+<p>At this point CAS is configured and looking at the output of CAS help there are
+a few options to pass:</p>
+<div class="highlight-python"><pre>Usage: cas [opts] args
+
+Options:
+  -h, --help            show this help message and exit
+  -i IDENTIFIER, --identifier=IDENTIFIER
+                        Unique ID for core
+  -f FILENAME, --file=FILENAME
+                        Filename
+  -e EMAIL, --email=EMAIL
+                        Define email for results (must be valid!)
+  -m, --modules         Extract associated kernel modules</pre>
+</div>
+<p>CAS prepares its directory hierarchy based on the <tt class="docutils literal"><span class="pre">identifier</span></tt> this option is
+therefore required. <tt class="docutils literal"><span class="pre">filename</span></tt> is also required as it tells CAS exactly which
+core to process and associate with <tt class="docutils literal"><span class="pre">identifier</span></tt>. If wanting email results from
+CAS simply pass it the email parameter.</p>
+<p>An example, of a user wanting to process a corefile named <tt class="docutils literal"><span class="pre">vmcore.12345</span></tt>:</p>
+<div class="highlight-python"><pre>$ cas -i 12345 -f vmcore.12345 -e user@cas-server.com</pre>
+</div>
+<p>In the above example an assumption is made that <tt class="docutils literal"><span class="pre">1</span></tt> is associated to some
+form of ticketing system so to keep things organized an identifier was set of
+that number.</p>
+<p>The directory hierarchy for the current job should look like <tt class="docutils literal"><span class="pre">/cores/1</span></tt>.
+In addition to the processing of core files there is also a <tt class="docutils literal"><span class="pre">process</span> <span class="pre">log</span></tt> contained
+within this directory for each job processed. If multiple jobs for the same identifier
+are issued they are placed within a sub directory marked by the current timestamp
+and the relevant data associated with it.</p>
+<p>The last option worth mentioning is for core analyst who are needing to work
+within the core that requires one of the kernel modules loaded during the crash.
+This can be extracted by passing the <tt class="docutils literal"><span class="pre">modules</span></tt> parameter in the CAS execution
+statement. <tt class="docutils literal"><span class="pre">Note</span></tt> the <tt class="docutils literal"><span class="pre">modules</span></tt> parameter is not heavily used but can be
+useful when analyzing filesystem issues and the like.</p>
+<p>From this point on CAS  will download, process, and email the results of its
+initial analysis to the specified email address. From there further instructions
+are provided in either the email or the <tt class="docutils literal"><span class="pre">process</span> <span class="pre">log</span></tt> on how to access and analyze
+the core.</p>
+</div>
+</div>
+<div class="section" id="analyzing">
+<h2>Analyzing<a class="headerlink" href="#analyzing" title="Permalink to this headline">¶</a></h2>
+<p>Continuing with the previous example the results of CAS processing should be emailed
+and look something similar to:</p>
+<div class="highlight-python"><pre>Subject: CAS results for 1
+Date: Tue, 06 May 2009 08:41:20 -0500
+
+Location: Location: /cores/1/2009.05.06.08.41.20
+Server: x86_64.cas-server.com
+Output data:
+PID: 0      TASK: ffffffff803e9b80  CPU: 0   COMMAND: "swapper"
+ #0 [ffffffff8047a0a0] smp_call_function_interrupt at ffffffff8011d191
+ #1 [ffffffff8047a0b0] call_function_interrupt at ffffffff80110bf5
+--- &lt;IRQ stack&gt; ---
+ #2 [ffffffff80529f08] call_function_interrupt at ffffffff80110bf5
+    [exception RIP: default_idle+32]
+    RIP: ffffffff8010e7a9  RSP: ffffffff80529fb8  RFLAGS: 00000246
+    RAX: 0000000000000000  RBX: 0000000000000000  RCX: 0000000000000018
+    RDX: ffffffff8010e789  RSI: ffffffff803e9b80  RDI: 0000010008001780
+    RBP: 0000000000000000   R8: ffffffff80528000   R9: 0000000000000080
+    R10: 0000000000000100  R11: 0000000000000004  R12: 0000000000000000
+    R13: 0000000000000000  R14: 0000000000000000  R15: 0000000000000000
+    ORIG_RAX: fffffffffffffffa  CS: 0010  SS: 0018
+ #3 [ffffffff80529fb8] cpu_idle at ffffffff8010e81c
+
+PID: 0      TASK: 100f57cb030       CPU: 1   COMMAND: "swapper"
+ #0 [1000107bfa0] smp_call_function_interrupt at ffffffff8011d191
+ #1 [1000107bfb0] call_function_interrupt at ffffffff80110bf5
+--- &lt;IRQ stack&gt; ---
+ #2 [10001073e98] call_function_interrupt at ffffffff80110bf5
+    [exception RIP: default_idle+32]
+    RIP: ffffffff8010e7a9  RSP: 0000010001073f48  RFLAGS: 00000246
+    RAX: 0000000000000000  RBX: 0000000000000e86  RCX: 0000000000000018
+    RDX: ffffffff8010e789  RSI: 00000100f57cb030  RDI: 00000102000a4780
+    RBP: 0000000000000001   R8: 0000010001072000   R9: 0000000000000040
+    R10: 0000000000000000  R11: 0000000000000008  R12: 0000000000000000
+    R13: 0000000000000000  R14: 0000000000000000  R15: 0000000000000000
+    ORIG_RAX: fffffffffffffffa  CS: 0010  SS: 0018
+ #3 [10001073f48] cpu_idle at ffffffff8010e81c
+
+PID: 6122   TASK: 101f3658030       CPU: 2   COMMAND: "gfs_quotad"
+ #0 [101f21efb20] start_disk_dump at ffffffffa03183ff
+ #1 [101f21efb50] try_crashdump at ffffffff8014cc1d
+ #2 [101f21efb60] die at ffffffff80111c90
+ #3 [101f21efb80] do_invalid_op at ffffffff80112058
+ #4 [101f21efc40] error_exit at ffffffff80110e1d
+    [exception RIP: do_dlm_lock+366]
+
+... snip ...</pre>
+</div>
+<p>From this email a <tt class="docutils literal"><span class="pre">location</span></tt> is provided <tt class="docutils literal"><span class="pre">Location:</span> <span class="pre">/cores/1/2009.05.06.08.41.20</span></tt>
+and the server in which further analyzation can be continued <tt class="docutils literal"><span class="pre">x86_64.cas-server.com</span></tt>.</p>
+<p>Normally from a support perspective this email should contain enough information
+for a kernel engineer to begin debugging the problem. Assuming more is needed
+the information provided previously will prove beneficial for anyone wishing
+to access this data.</p>
+<p>Logging into the stated server and changing into the directory defined several
+files are presented:</p>
+<div class="highlight-python"><pre>$ pwd
+Location: /cores/1/2009.05.06.08.41.20
+$ ls
+1.log  crash  crash.in  crash.out  usr  vmcore.12345 log memory modules sys traceback</pre>
+</div>
+<p><tt class="docutils literal"><span class="pre">1.log</span></tt>: contains any informational messages presented during the processing
+of the core. Everything from informational to debug statements are provided here.</p>
+<p><tt class="docutils literal"><span class="pre">crash</span></tt>: a script autogenerated to provide an automated way of gathering intial
+data from the coredump. <tt class="docutils literal"><span class="pre">Note</span></tt> if wanting to use this crash wrapper in a more
+manual approach some alterations to the script need to occur.</p>
+<p>crash wrapper in its original form:</p>
+<div class="highlight-python"><pre>#!/bin/sh
+  /usr/bin/crash \
+    /cores/1/2009.05.06.08.41.20/vmcore.12345 \
+      usr/*/*/*/*/2.6.9*largesmp/vmlinux $*</pre>
+</div>
+<p><tt class="docutils literal"><span class="pre">Note</span></tt> Running the crash wrapper manually will result in an interactive instance.</p>
+<p><strong>Alternative to using the crash wrapper</strong></p>
+<p>It is possible to specify the vmlinux and corefile with crash on the command line:</p>
+<div class="highlight-python"><pre>$ crash /cores/1/2009.05.06.08.41.20/usr/*/*/*/*/2.6.9*largesmp/vmlinux  \
+    /cores/1/2009.05.06.08.41.20/vmcore.12345</pre>
+</div>
+<p><tt class="docutils literal"><span class="pre">crash.in</span></tt>: a list of commands to be read into crash during the automated
+analysis:</p>
+<div class="highlight-python"><div class="highlight"><pre><span class="n">bt</span> <span class="o">&gt;&gt;</span> <span class="n">traceback</span>
+<span class="n">bt</span> <span class="o">-</span><span class="n">a</span> <span class="o">&gt;&gt;</span> <span class="n">traceback</span>
+<span class="n">sys</span> <span class="o">&gt;&gt;</span> <span class="n">sys</span>
+<span class="n">sys</span> <span class="o">-</span><span class="n">c</span> <span class="o">&gt;&gt;</span> <span class="n">sys</span>
+<span class="n">log</span> <span class="o">&gt;&gt;</span> <span class="n">log</span>
+<span class="n">mod</span> <span class="o">&gt;&gt;</span> <span class="n">modules</span>
+<span class="n">kmem</span> <span class="o">&gt;&gt;</span> <span class="n">memory</span>
+<span class="n">kmem</span> <span class="o">-</span><span class="n">f</span> <span class="o">&gt;&gt;</span> <span class="n">memory</span>
+<span class="nb">exit</span>
+</pre></div>
+</div>
+<p>This can be extended by adding more snippets into <tt class="docutils literal"><span class="pre">/var/lib/cas/snippets</span></tt>. Please see
+that directory for examples.</p>
+<p><tt class="docutils literal"><span class="pre">crash.out</span></tt>: output of initial crash analysis and the same data which
+is sent in an email if defined.</p>
+<p><tt class="docutils literal"><span class="pre">usr</span></tt>: directory structure from the extraction of the vmlinux file
+from the associated kernel-debuginfo rpm for use within crash:</p>
+<div class="highlight-python"><pre>/cores/1/2009.05.06.08.41.20/
+    usr/lib/debug/lib/modules/2.6.9-78.18.ELlargesmp/vmlinux</pre>
+</div>
+<p><tt class="docutils literal"><span class="pre">vmcore.12345</span></tt>: corefile from which was either defined or extracted from
+a compressed archive during CAS initialization.</p>
+</div>
+<div class="section" id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permalink to this headline">¶</a></h2>
+<p>Some of the major problems that arise when using CAS usually boils down to some
+improper usage of the compression and archiving tools.</p>
+<p>When compressing a core which may need to be sent over the network to a CAS server
+one of the proper ways to do so is:</p>
+<div class="highlight-python"><pre>$ tar cvjf vmcore.12345.tar.bz2 vmcore.12345</pre>
+</div>
+<p>Other various ways of compressing archive are as follows:</p>
+<div class="highlight-python"><pre>$ tar cvzf vmcore.tar.gz vmcore
+$ gzip vmcore
+$ bzip2 vmcore</pre>
+</div>
+<p><tt class="docutils literal"><span class="pre">Note</span></tt>: please do not double compress or CAS will fail.</p>
+<p>Another issue, which isn&#8217;t primarily a fault of CAS, are
+incomplete or corrupted cores. If either of these occur
+there is a chance that CAS will not be able to process
+the data needed to associate a debug kernel or do any
+sort of automated analysis. Unfortunately, there is not
+much that can be done to resolve these sort of issues
+other than verifying that the process which happens when
+a system coredump and when that dump reaches the
+system specified for retrieval is solid and are seeing
+no errors.</p>
+</div>
+</div>
+<div class="section" id="resources">
+<h1>Resources<a class="headerlink" href="#resources" title="Permalink to this headline">¶</a></h1>
+<ul class="simple">
+<li><a class="reference external" href="http://fedorahosted.org/cas">CAS Wiki</a></li>
+<li><a class="reference external" href="https://fedorahosted.org/cas/wiki/CasFAQ">CAS FAQ</a></li>
+<li><a class="reference external" href="https://fedorahosted.org/mailman/listinfo/cas">Mailing list</a></li>
+<li><a class="reference external" href="https://fedorahosted.org/releases/c/a/cas/">Upstream releases</a></li>
+<li>Checkout latest from Git, <tt class="docutils literal"><span class="pre">git</span> <span class="pre">clone</span> <span class="pre">git://git.fedorahosted.org/cas.git</span></tt></li>
+</ul>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+            <h3><a href="">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference external" href="">Core Analysis System</a><ul>
+<li><a class="reference external" href="#introduction">Introduction</a><ul>
+<li><a class="reference external" href="#description">Description</a></li>
+<li><a class="reference external" href="#prerequisites">Prerequisites</a></li>
+<li><a class="reference external" href="#configuration">Configuration</a></li>
+</ul>
+</li>
+<li><a class="reference external" href="#setup-execution">Setup &amp; Execution</a><ul>
+<li><a class="reference external" href="#preparing-cas-server">Preparing CAS Server</a></li>
+<li><a class="reference external" href="#running-cas">Running CAS</a></li>
+</ul>
+</li>
+<li><a class="reference external" href="#analyzing">Analyzing</a></li>
+<li><a class="reference external" href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+</li>
+<li><a class="reference external" href="#resources">Resources</a></li>
+</ul>
+
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/index.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li><a href="">cas v0.15 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+      &copy; Copyright 2009, Adam Stokes.
+      Created using <a href="http://sphinx.pocoo.org/">Sphinx</a> 0.6.3.
+    </div>
+  </body>
+</html>

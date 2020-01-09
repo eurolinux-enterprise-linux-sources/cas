@@ -1,0 +1,357 @@
+#!/usr/bin/python
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+""" cas - core accessibility system.
+"""
+import sys
+import optparse
+import os
+import ConfigParser
+import smtplib
+import socket
+import paramiko
+
+from cas.cas_subprocess import Popen, PIPE
+from datetime import datetime
+
+from cas.network import Download, Executor, CasNetworkException
+from cas.core import CoreBase, CoreException
+from cas.db import CasStorage, CasStorageException
+from cas.util import UtilBase, Logging
+from cas.rpmutils import RPMBase
+
+# shutil from python 2.6 includes several enhancements for our use
+# mainly in the _move_ method.
+import cas.cas_shutil as shutil
+
+if sys.version_info[:2] < (2,3):
+    raise SystemExit("Python >= 2.3 required")
+
+# Configuration parsing of /etc/cas.conf
+# TODO: rework config read to place all items
+#       into a key,value pair automatically
+config = ConfigParser.ConfigParser()
+config.read("/etc/cas.conf")
+settings = {}
+if config.has_section("settings"):
+    for opt, val in config.items("settings"):
+        settings[opt.upper()] = val
+
+# Check for some advanced configurations
+# Test to see if we provide a 32bit crash binary
+# mainly used for x86_64 system who wish to analyze
+# 32bit cores.
+CRASH_32=None
+if config.has_option("advanced", "crash_32"):
+    CRASH_32=config.get("advanced", "crash_32")
+
+# Do we have a buffersize
+BUFFERSIZE=None
+if config.has_option("advanced", "buffersize"):
+    BUFFERSIZE=config.get("advanced", "buffersize")
+
+class CoreHandler(object):
+    def __init__(self, filename, dst, logger):
+        self.filename = filename
+        self.basename = os.path.basename(self.filename)
+        self.dst = dst
+        self.currentDirectory = os.path.realpath(os.curdir)
+        self.casLog = logger
+        self.tool = CoreBase()
+
+    def run(self):
+        if(self.filename.startswith("http") or self.filename.startswith("ftp")):
+            self.casLog.info("Downloading %s" % (self.filename,))
+            # filename is a url, process it with our download module
+            # this should return the the abspath to our processed directory
+            # and downloaded file
+            try:
+                self.filename = Download(self.filename, self.currentDirectory).get()
+            except CasNetworkException, e:
+                raise SystemExit(self.casLog.debug(e))
+        if not os.path.isfile(self.filename):
+            # not a url in this case so tests for local existence
+            # TODO: add support to check remote hosts
+            raise SystemExit(self.casLog.debug("Unable to find file %s" % (self.filename,)))
+        if self.tool.isCorefile(self.filename):
+            # No need to proceed to extracting corefile since we assume
+            # this is already at the proper stage.
+            shutil.move(self.filename,
+                        os.path.join(self.dst, self.basename))
+            self.filename = os.path.join(self.dst, self.basename)
+            return self.filename
+        try:
+            self.casLog.info("Detected a compressed core, extracting.. please wait as " \
+                             "this process can take a long time.")
+            # ok so some decompression utilites like gzip, bzip do not extract
+            # files into the `cwd` unless specified with a to-stdout option.
+            # this is a pain so we just move everything to `cwd` and proceed
+            # from there.
+            dst = os.path.join(self.currentDirectory, self.basename)
+            shutil.move(self.filename, dst)
+            corepath = self.tool.extractCore(dst)
+            # corefile extracted now move it to work directory, pull basename
+            # from corepath since we auto-detect the core file from extraction
+            coreBasename = os.path.basename(corepath)
+            shutil.move(corepath,os.path.join(self.dst, coreBasename))
+            self.filename = os.path.join(self.dst, coreBasename)
+            return self.filename
+        except CoreException, err:
+            raise SystemExit(self.casLog.debug(err))
+
+class TimestampHandler(object):
+    def __init__(self, corefile, logger, database):
+        self.corefile = corefile
+        self.casLog = logger
+        self.util = UtilBase()
+        self.tool = CoreBase()
+        self.db = database
+
+    def run(self):
+        # dig through the buildstamp database and attempt to match it with the
+        # one found in the core
+        try:
+            coreTimestamp = self.tool.timestamp(self.corefile, BUFFERSIZE)
+        except CoreException, err:
+            raise SystemExit(self.casLog.debug(err))
+        # query timestamp table, return tuple debuginfoRPM, and path to
+        # debugKernel
+        timestamp_query = self.db.getTimestampDebug(coreTimestamp)
+        if timestamp_query:
+            return (timestamp_query)
+        raise SystemExit(self.casLog.debug("Unable to match timestamp %s" % (coreTimestamp,)))
+
+class CasApplication(object):
+    def __init__(self, args):
+        self.db = CasStorage(settings["DATABASE"])
+        self.db.connect()
+        self.parse_options(args)
+        self.util = UtilBase()
+        self.rpmTool = RPMBase()
+        
+    def parse_options(self, args):
+        # build option - arguement list in the form of
+        # cas -i <id> -f <filename> -m user@example.com
+        parser = optparse.OptionParser(usage="cas [opts] args")
+        parser.add_option("-i","--identifier", dest="identifier",
+                          help="Unique ID for core")
+        parser.add_option("-f","--file", dest="filename",
+                          help="Filename")
+        parser.add_option("-e","--email", dest="email",
+                          help="Define email for results")
+        parser.add_option("-m","--modules", dest="kernel_modules",
+                          help="Extract associated kernel modules",
+                          action="store_true")
+        self.opts, args = parser.parse_args()
+
+        if not self.opts.identifier:
+            parser.error("A unique identifier number is missing.")
+        elif not self.opts.filename:
+            parser.error("A file object is missing.")
+
+        self.filename = self.opts.filename
+        self.identifier = self.opts.identifier
+        self.email = self.opts.email
+        self.extractKernelModules = self.opts.kernel_modules
+        # we want to allow for multiple cores under same identifier
+        # so we base the hierarchy /workDirectory/identifier/datetime
+        datenow = datetime.now()
+        dateFormatted = datenow.strftime("%Y.%m.%d.%I.%M.%S")
+        self.storagePath = os.path.join(settings["WORKDIRECTORY"], self.identifier)
+        self.storagePath = os.path.join(self.storagePath, dateFormatted)
+
+        # build logger object to deal with logging per job and keep things
+        # clean and easy to debug
+        self.casLog = Logging(self.storagePath, self.identifier, settings["DEBUGLEVEL"])
+
+        # Add job to database, this allows us to purge
+        # data based on job date creation then by other
+        # means. (i.e. identifier == a bugzilla #)
+        self.db.addJob(self.identifier, dateFormatted, self.email)
+
+    def run(self):
+        # setup directory structure
+        if not os.path.isdir(self.storagePath):
+            os.makedirs(self.storagePath)
+        self.casLog.info("Starting job at %s" % (self.storagePath,))
+        # begin core extraction analysis
+        corefile = CoreHandler(self.filename, self.storagePath, self.casLog).run()
+        self.casLog.info("Corefile prepared, processing %s" % (corefile,))
+        debuginfo, debugKernel = TimestampHandler(corefile, self.casLog, self.db).run()
+        
+        # we've got corefile prepped, timestamp, and debugkernel identified
+        # chdir into work directory and proceed
+        os.chdir(self.storagePath)
+
+        corefileArch = self.util.getElfArch(corefile)
+        self.casLog.debug("core arch %s" % (corefileArch,))
+
+        # Read current machine arch to see if we can bypass func and proceed
+        # with processing the core on the current machine
+        currentMachineArch = Popen(["uname","-m"], stdout=PIPE, stderr=PIPE)
+        currentMachineArch = currentMachineArch.stdout.read().strip()
+        self.casLog.debug("local machine arch %s" % (currentMachineArch,))
+
+        # check if an installed vmlinux can be used (symlink to save space)
+        local_vmlinux = "/%s" % (debugKernel,)
+        if currentMachineArch == corefileArch and os.path.isfile(local_vmlinux):
+            self.casLog.info("Using local debug kernel")
+            os.symlink(local_vmlinux, "%s/%s" % 
+                         (self.storagePath, "vmlinux"))
+            # define absolute path to debugkernel
+            debugKernel = os.path.abspath("vmlinux")
+        else:
+            filterString = "*/%s" % (debugKernel,)
+            self.casLog.info("Extracting debug kernel with filter %s" % (filterString,))
+            self.rpmTool.extract(debuginfo, self.storagePath,
+                          filter=filterString,
+                          return_results=False)
+
+        self.casLog.info("checking debug kernel %s" % (debugKernel,))
+
+        # setup crash file to finalize the processing of the core file
+        self.util.buildCrashFile(self.storagePath, corefile, debugKernel)
+        # Pull the architecture from the elf file to match up with a
+        # server providing this architecture
+        debugKernelArch = self.util.getElfArch(debugKernel)
+        # Check if we have installed crash 32bit on system
+        if debugKernelArch == "i686" and CRASH_32 is not None:
+            import platform
+            # Define current machine hostname, mainly used for email results.
+            casProcessMachine = platform.uname()[1]
+            # 32bit crash on same system.
+            self.util.buildCrashFile(self.storagePath, corefile, debugKernel,
+                                     crash_bin=CRASH_32)
+            self.casLog.info("Current machine suitable for processing 32 bit core, "\
+                             "running crash.")
+            cmd = "./crash -i crash.in > crash.out"
+            cmdPipe = Popen([cmd], stdout=PIPE, stderr=PIPE, shell=True)
+            cmdData = cmdPipe.communicate()
+            # pull status code to verify crash even ran to completeness
+            sts, out, err = (cmdPipe.returncode, cmdData[0].strip(),
+                             cmdData[1].strip())
+            if sts:
+                self.casLog.debug("crash problem: err: %s, out: %s" % (err, out))
+        elif debugKernelArch == currentMachineArch:
+            import platform
+            # Define current machine hostname, mainly used for email results.
+            casProcessMachine = platform.uname()[1]
+            # The machine is suitable for processing the core through crash.
+            self.casLog.info("Current machine suitable for processing core, running crash.")
+            cmd = "./crash -i crash.in > crash.out"
+            cmdPipe = Popen([cmd], stdout=PIPE, stderr=PIPE, shell=True)
+            cmdData = cmdPipe.communicate()
+            # pull status code to verify crash even ran to completeness
+            sts, out, err = (cmdPipe.returncode, cmdData[0].strip(),
+                             cmdData[1].strip())
+            if sts:
+                self.casLog.debug("crash problem: err: %s, out: %s" % (err, out))
+        else:
+            # The machine running cas isn't capable of processing this core, lets
+            # attempt with paramiko. Assuming paramiko is installed and a server database
+            # is configured we attempt to process the core at another machine.
+            try:
+                self.casLog.info("Crash file built, locating suitable %s system for " \
+                       "processing" % (debugKernelArch,))
+                serverList = self.db.getServers()
+                ssh_obj = paramiko.SSHClient()
+                ssh_obj.load_host_keys(os.path.expanduser("~/.ssh/known_hosts"))
+                if serverList:
+                    for hostname, arch, port in serverList:
+                        if arch == debugKernelArch:
+                            # TODO: Randomize server selection
+                            self.casLog.info("Machine %s found, processing " \
+                                             "crash output" % (hostname,))
+                            cmd = ["cd " + os.path.join(self.storagePath) + "\n",
+                                   "&& ./crash -i crash.in > crash.out\n"]
+                            Executor(settings["SSHKEY"], hostname, 
+                                     port, username=settings["CASUSER"],
+                                     cmd).run()
+                            break
+                        else:
+                            self.casLog.info("No servers available for arch and current system not "\
+                                   "suitable for processing, please run cas-admin -h " \
+                                   "for more information")
+                else:
+                    raise SystemExit(self.casLog.info("No servers database found, please run cas-admin -h for " \
+                          "more information"))
+            except ImportError:
+                self.casLog.info("Current running machine is not suitable for processing this core " \
+                    "and python-paramiko is not installed/configured properly.")
+                self.casLog.info("Finishing job without processing the core, please find a suitable %s "\
+                    "machine in order to view this core in crash." % (debugKernelArch,))
+        crashOutFile = os.path.join(self.storagePath,"modules")
+        if os.path.isfile(crashOutFile) and self.extractKernelModules:
+            self.casLog.info("Extracting loaded kernels modules. This will " \
+                             "take several minutes.")
+            # Here we extract kernel modules processed from crash.out
+            # this is usually desired during filesystem, storage
+            # analysis of a core.
+            crashOutFH = open(crashOutFile, 'r')
+            crashOutData = crashOutFH.readlines()
+            # search for MODULE NAME SIZE OBJECT FILE line
+            for item in enumerate(crashOutData):
+                idx, txt = item
+                if 'MODULE' in txt:
+                    index = idx
+            moduleList = []
+            # we have our index of above, now we obtain
+            # the loaded modules from the list
+            for item in crashOutData[index+1:]:
+                moduleList.append(item.split()[1])
+            # shift through moduleList extracting from
+            # kernel as we go
+            for module in moduleList:
+                # This will extract all modules for each kernel within
+                # the debuginfo.
+                # TODO: Only extract the module for the debug kernel in use.
+                moduleFilter = "*/"+module+".ko*"
+                self.rpmTool.extract(debuginfo, self.storagePath,
+                                     filter=moduleFilter,
+                                     return_results=False)
+        # Just want to email the logfile to the submitter.
+        crashOutFile = os.path.join(self.storagePath, "log")
+        if os.path.isfile(crashOutFile) and self.email:
+            self.casLog.info("Crash output processed, sending email to %s" % (self.email,))
+            try:
+                mailServer = smtplib.SMTP(settings["SMTPHOST"])
+                try:
+                    # Compose email msg of results
+                    msg = "Subject: CAS results for %s\r\n\n" % (self.identifier,)
+                    msg += "Location: %s\n" % (self.storagePath,)
+                    msg += "Server: %s\n" % (casProcessMachine,)
+                    msg += "Output data:\n"
+                    crashOutFH = open(crashOutFile,'r')
+                    msg += crashOutFH.read()
+                    crashOutFH.close()
+                    #mailServer.set_debuglevel(0)
+                    mailServer.sendmail(self.email,self.email,msg)
+                finally:
+                    mailServer.quit()
+            except smtplib.SMTPException, e:
+                self.casLog.debug("Unable to connect to mail server: %s (%s), no email " \
+                                  "results sent." % (SMTPHOST,str(e)))
+            except (os.error, socket.error), e:
+                self.casLog.debug(e)
+        self.casLog.info("Job on %s complete and located in %s." % (self.filename,
+                                                          self.storagePath))
+        return
+
+if __name__=="__main__":
+    # Before we start the database has to exist.
+    if not os.path.isfile(settings["DATABASE"]):
+        raise SystemExit("No Database exist, please run cas-admin --help for more information.")
+    # Begin CAS
+    app = CasApplication(sys.argv[1:])
+    sys.exit(app.run())

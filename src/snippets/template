@@ -1,0 +1,9 @@
+#!/bin/sh
+# Environmentals set by CAS
+# CAS_ARCH = Architecture of the given core
+# CAS_KERNEL = uname -r
+# 
+# 
+# if ( CAS_ARCH eq 'x86_64' )
+#    echo "sys -c >> template"
+# fi

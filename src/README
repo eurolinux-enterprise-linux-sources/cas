@@ -1,0 +1,49 @@
+CAS.README
+
+* Other documentation check the wiki http://fedorahosted.org/cas
+
+Requirements
+
+/etc/cas.conf - This needs to be modified with your directory specifics. 
+Comments in the conf file are pretty straight forward.
+
+A cas database needs to be prepared which houses all the build timestamps 
+of the debug kernels you wish to use.
+
+As root run:
+
+# cas-admin -b
+
+Build your server database:
+
+# cas-admin -s
+
+Running CAS
+
+Once completed take a generated kernel dump and send it through cas:
+
+# cas -i <ID> -f vmcore -m username@example.com
+
+The vmcore may be in the form of http/ftp (e.g. http://myhost.com/files/vmcore.tar.gz).
+
+The compression scheme for a vmcore should be in the form of one of the following:
+
+# tar cvzf vmcore.tar.gz vmcore
+# tar cvjf vmcore.tar.bz2 vmcore
+# gzip vmcore
+# bzip2 vmcore
+
+or you may pass it an uncompressed vmcore.
+
+Please do not _double compress_! For example, do not do a gzip vmcore, 
+then a tar cvzf vmcore.tar.gz vmcore.gz as you will not gain anything 
+from this. CAS will also fail to detect the decompression type.
+
+Once complete results should be emailed to the address specified or if 
+processed locally should be prepared for you to do further analyzation 
+within crash.
+
+If any problem occurs please check the log within
+/your/core/processed_dir/identifier/identifier.log
+
+Other documentation check the wiki http://fedorahosted.org/cas
